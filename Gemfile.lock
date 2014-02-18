@@ -8,9 +8,10 @@ GIT
 
 GIT
   remote: git://github.com/spree/endpoint_base.git
-  revision: ace2dda3635f55346ced304884e561bb95046ca6
+  revision: 3e237c59812ef0c4a169cb2ed96f874f3a3f64bf
+  branch: master
   specs:
-    endpoint_base (0.1.0)
+    endpoint_base (0.1.1)
       activesupport
       jbuilder
       json
