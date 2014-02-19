@@ -126,7 +126,7 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
       set_summary "NetSuite Sales Order #{@payload[:order][:number]} was closed"
       process_result 200
     else
-      refund = NetsuiteIntegration::Refund.new(@config, @payload, order)
+      refund = NetsuiteIntegration::Refund.new(@config, @payload[:order], order)
       if refund.process!
         set_summary "Customer Refund created and NetSuite Sales Order #{@payload[:order][:number]} was closed"
         process_result 200
