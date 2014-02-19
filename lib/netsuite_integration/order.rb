@@ -30,7 +30,8 @@ module NetsuiteIntegration
       sales_order.tran_date = order_payload[:placed_on]
 
       if sales_order.add
-        if original[:payment_state] == "paid"
+        # if original[:payment_state] == "paid"
+        if got_paid?
           create_customer_deposit
         end
 
@@ -98,7 +99,7 @@ module NetsuiteIntegration
     end
 
     def import_billing!
-      payload = @payload[:order][:billing_address]
+      payload = order_payload[:billing_address]
       sales_order.transaction_bill_address = NetSuite::Records::BillAddress.new({
         bill_addressee: "#{payload[:firstname]} #{payload[:lastname]}",
         bill_addr1: payload[:address1],
@@ -115,7 +116,7 @@ module NetsuiteIntegration
       sales_order.shipping_cost = order_payload[:totals][:shipping]
       sales_order.ship_method = NetSuite::Records::RecordRef.new(internal_id: shipping_id)
 
-      payload = @payload[:order][:shipping_address]
+      payload = order_payload[:shipping_address]
       sales_order.transaction_ship_address = NetSuite::Records::ShipAddress.new({
         ship_addressee: "#{payload[:firstname]} #{payload[:lastname]}",
         ship_addr1: payload[:address1],

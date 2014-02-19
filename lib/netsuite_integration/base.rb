@@ -6,8 +6,10 @@ module NetsuiteIntegration
       @config = config
       
       @payload = message.with_indifferent_access
-      @original = payload[:original]
-      @message_name = message[:message]
+      # Original hash no longer exists
+      # @original = payload[:original]
+      # Message name no longer exists
+      # @message_name = message[:message]
       # endpoint_base handles sending back the request_id
       # @message_id = message[:message_id]
     end
