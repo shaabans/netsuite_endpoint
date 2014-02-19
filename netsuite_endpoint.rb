@@ -123,16 +123,15 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
 
     if customer_record_exists?
       sales_order_service.close!(order)
-      add_notification "info", "NetSuite Sales Order #{@message[:payload][:order][:number]} was closed"
-
+      set_summary "NetSuite Sales Order #{@payload[:order][:number]} was closed"
       process_result 200
     else
-      refund = NetsuiteIntegration::Refund.new(@config, @message, order)
+      refund = NetsuiteIntegration::Refund.new(@config, @payload, order)
       if refund.process!
-        add_notification "info", "Customer Refund created and NetSuite Sales Order #{@message[:payload][:order][:number]} was closed"
+        set_summary "Customer Refund created and NetSuite Sales Order #{@payload[:order][:number]} was closed"
         process_result 200
       else
-        add_notification "error", "Failed to create a Customer Refund and close the NetSuite Sales Order #{@message[:payload][:order][:number]}"
+        set_summary "Failed to create a Customer Refund and close the NetSuite Sales Order #{@payload[:order][:number]}"
         process_result 500
       end      
     end
