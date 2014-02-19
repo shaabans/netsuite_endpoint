@@ -5,10 +5,11 @@ module NetsuiteIntegration
     def initialize(message = {}, config)
       @config = config
       
-      @payload = message[:payload].with_indifferent_access
+      @payload = message.with_indifferent_access
       @original = payload[:original]
       @message_name = message[:message]
-      @message_id = message[:message_id]
+      # endpoint_base handles sending back the request_id
+      # @message_id = message[:message_id]
     end
 
     def customer_service

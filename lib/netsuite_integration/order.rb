@@ -1,13 +1,13 @@
 module NetsuiteIntegration
   class Order < Base
-    attr_reader :config, :collection, :user_id, :order_payload, :sales_order
+    # Is 'collection' variable needed?
+    attr_reader :config, :collection, :order_payload, :sales_order
 
-    def initialize(config, message)
-      super(message, config)
+    def initialize(config, order_hash)
+      super(order_hash, config)
 
       @config = config
-      @user_id = original[:user_id]
-      @order_payload = payload[:order]
+      @order_payload = order_hash
 
       @sales_order = NetSuite::Records::SalesOrder.new({
         order_status: '_pendingFulfillment',
@@ -45,9 +45,11 @@ module NetsuiteIntegration
     end
 
     def got_paid?
-      if payload[:diff]
-        payload[:diff][:payment_state] == ["balance_due", "paid"]
+      payload[:payments].each do |payment|
+        # 'completed' or 'paid'?
+        return false if payment['status'] != 'completed'
       end
+      true
     end
 
     def errors

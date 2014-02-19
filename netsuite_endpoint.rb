@@ -5,9 +5,7 @@ require File.expand_path(File.dirname(__FILE__) + '/lib/netsuite_integration')
 
 class NetsuiteEndpoint < EndpointBase::Sinatra::Base
   before do
-    if @message
-      puts "  Start NetSuite API Request at #{Time.now} for #{@message['message']}"
-    end
+    print "  Start NetSuite API Request at #{Time.now} for #{request.path}"
 
     if config = @config
       @netsuite_client ||= NetSuite.configure do
@@ -25,9 +23,7 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
   end
 
   after do
-    if @message
-      puts "  End NetSuite API Request at #{Time.now} for #{@message['message']}"
-    end
+    print "  End NetSuite API Request at #{Time.now} for #{request.path}"
   end
 
   post '/products' do
@@ -47,16 +43,24 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
     end
   end
 
-  post '/orders' do
+  post '/add_order' do
     begin
-      case @message['message']
-      when 'order:new', 'order:updated'
-        create_or_update_order
-      when 'order:canceled', 'order:cancelled'
+      create_or_update_order
+    rescue StandardError => e
+      set_summary "#{e.message}: #{e.backtrace.to_a.join('\n\t')}"
+      process_result 500
+    end
+  end
+
+  post '/update_order' do
+    begin
+      if ['canceled', 'cancelled'].include? @payload['order']
         cancel_order
+      else
+        create_or_update_order
       end
     rescue StandardError => e
-      add_notification "error", e.message, nil, { backtrace: e.backtrace.to_a.join("\n\t") }
+      set_summary "#{e.message}: #{e.backtrace.to_a.join('\n\t')}"
       process_result 500
     end
   end
@@ -88,23 +92,23 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
 
   private
   def create_or_update_order
-    order = NetsuiteIntegration::Order.new(@config, @message)
+    order = NetsuiteIntegration::Order.new(@config, @payload[:order])
 
     unless order.imported?
       if order.import
-        add_notification "info", "Order #{order.sales_order.external_id} sent to NetSuite # #{order.sales_order.tran_id}"
+        set_summary "Order #{order.sales_order.external_id} sent to NetSuite # #{order.sales_order.tran_id}"
         process_result 200
       else
-        add_notification "error", "Failed to import order #{order.sales_order.external_id} into Netsuite", order.errors
+        set_summary "Failed to import order #{order.sales_order.external_id} into Netsuite" # Where to add order.errors?
         process_result 500
       end
     else
       if order.got_paid?
         if order.create_customer_deposit
-          add_notification "info", "Customer Deposit created for NetSuite Sales Order #{order.sales_order.external_id}"
+          set_summary "Customer Deposit created for NetSuite Sales Order #{order.sales_order.external_id}"
           process_result 200
         else
-          add_notification "error", "Failed to create a Customer Deposit for NetSuite Sales Order #{order.sales_order.external_id}"
+          set_summary "Failed to create a Customer Deposit for NetSuite Sales Order #{order.sales_order.external_id}"
           process_result 500
         end
       else
@@ -114,7 +118,7 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
   end
 
   def cancel_order
-    order = sales_order_service.find_by_external_id(@message[:payload][:order][:number]) or 
+    order = sales_order_service.find_by_external_id(@payload[:order][:number]) or 
       raise RecordNotFoundSalesOrder, "NetSuite Sales Order not found for order #{order_payload[:number]}"
 
     if customer_record_exists?
