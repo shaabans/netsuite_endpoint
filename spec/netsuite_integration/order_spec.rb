@@ -11,24 +11,24 @@ module NetsuiteIntegration
       })
     end
 
-    context 'order was already imported' do
-      context "and paid" do
-        it "does nothing" do
-          expect(subject.got_paid?).to be_false
-        end
+    context 'order was paid' do
+      before do
+        described_class.any_instance.stub_chain :sales_order_service, :find_by_external_id
       end
 
-      context "and then got paid" do
-        subject do
-          described_class.new(config, { payload: Factories.order_updated_payload })
-        end
-
-        specify { expect(subject.got_paid?).to be }
+      it "says so" do
+        expect(subject.paid?).to be
       end
     end
 
     context 'when order is new' do
       let(:order_number) { 'RREGR4354EGWREERGRG' }
+
+      before do
+        described_class.any_instance.stub_chain(
+          :sales_order_service, :find_by_external_id
+        ).and_return(nil, double("SalesOrder", tran_id: 1))
+      end
 
       subject do
         payload = Factories.order_new_payload
@@ -39,7 +39,7 @@ module NetsuiteIntegration
 
       it 'imports the order' do
         VCR.use_cassette('order/import') do
-          order = subject.import
+          order = subject.create
 
           expect(order).to be
           expect(order.external_id).to eq(order_number)
@@ -69,10 +69,24 @@ module NetsuiteIntegration
           payload['order']['totals']['tax'] = 3.25
           order = described_class.new(config, { payload: payload })
 
-          expect(order.import).to be
+          expect(order.create).to be
           # we really only care about item decimals here
           expect(order.sales_order.item_list.items[3].rate).to eq(3.25)
         end
+      end
+    end
+
+    context "existing order" do
+      let(:existing_order) do
+        double("SalesOrder", internal_id: Time.now, external_id: 1.minute.ago)
+      end
+
+      # other objects, e.g. Customer Deposit depend on sales_order.external_id being set
+      it "sets both internal_id and external id on new sales order object" do
+        described_class.any_instance.stub_chain :sales_order_service, find_by_external_id: existing_order
+
+        expect(subject.sales_order.external_id).to eq existing_order.external_id
+        expect(subject.sales_order.internal_id).to eq existing_order.internal_id
       end
     end
 

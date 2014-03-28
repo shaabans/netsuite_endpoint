@@ -1,6 +1,7 @@
 module NetsuiteIntegration
   class Order < Base
-    attr_reader :config, :collection, :user_id, :order_payload, :sales_order
+    attr_reader :config, :collection, :user_id, :order_payload, :sales_order,
+      :existing_sales_order
 
     def initialize(config, message)
       super(message, config)
@@ -9,45 +10,57 @@ module NetsuiteIntegration
       @user_id = original[:user_id]
       @order_payload = payload[:order]
 
-      @sales_order = NetSuite::Records::SalesOrder.new({
-        order_status: '_pendingFulfillment',
-        # this is Basic Sales Order Form
-        custom_form: NetSuite::Records::RecordRef.new(internal_id: 164),
-        external_id: order_payload[:number]
-      })
+      @existing_sales_order = sales_order_service.find_by_external_id(order_payload[:number])
+
+      if existing_sales_order
+        @sales_order = NetSuite::Records::SalesOrder.new({
+          internal_id: existing_sales_order.internal_id,
+          external_id: existing_sales_order.external_id
+        })
+      else
+        @sales_order = NetSuite::Records::SalesOrder.new({
+          order_status: '_pendingFulfillment',
+          # this is Basic Sales Order Form, allow us to close the order later if needed
+          custom_form: NetSuite::Records::RecordRef.new(internal_id: 164),
+          external_id: order_payload[:number]
+        })
+      end
     end
 
     def imported?
-      @imported_order ||= sales_order_service.find_by_external_id order_payload[:number]
+      @existing_sales_order
     end
 
-    def import
-      import_customer!
-      import_products!
-      import_billing!
-      import_shipping!
+    def create
+      sales_order.entity = set_up_customer
+      sales_order.item_list = build_item_list
+
+      sales_order.transaction_bill_address = build_bill_address
+
+      sales_order.shipping_cost = order_payload[:totals][:shipping]
+      sales_order.ship_method = NetSuite::Records::RecordRef.new(internal_id: shipping_id)
+      sales_order.transaction_ship_address = build_ship_address
 
       sales_order.tran_date = order_payload[:placed_on]
 
       if sales_order.add
-        if original[:payment_state] == "paid"
-          create_customer_deposit
-        end
-
         sales_order.tran_id = sales_order_service.find_by_external_id(order_payload[:number]).tran_id
         sales_order
       end
     end
 
-    def create_customer_deposit
-      order = @imported_order || sales_order
-      Services::CustomerDeposit.new(config).create order, order_payload[:totals][:order], order_payload[:number]
+    def update
+      sales_order.update(
+        item_list: build_item_list,
+        transaction_bill_address: build_bill_address,
+        shipping_cost: order_payload[:totals][:shipping],
+        ship_method: NetSuite::Records::RecordRef.new(internal_id: shipping_id),
+        transaction_ship_address: build_ship_address
+      )
     end
 
-    def got_paid?
-      if payload[:diff]
-        payload[:diff][:payment_state] == ["balance_due", "paid"]
-      end
+    def paid?
+      original[:payment_state] == "paid"
     end
 
     def errors
@@ -55,7 +68,7 @@ module NetsuiteIntegration
     end
 
     private
-    def import_customer!
+    def set_up_customer
       if customer = customer_service.find_by_external_id(order_payload[:email])
         if customer.addressbook_list.addressbooks == []
           # update address if missing
@@ -65,13 +78,11 @@ module NetsuiteIntegration
         customer = customer_service.create(order_payload.dup)
       end
 
-      sales_order.entity = NetSuite::Records::RecordRef.new(external_id: customer.external_id)
+      NetSuite::Records::RecordRef.new(external_id: customer.external_id)
     end
 
-    def import_products!
-      # Force tax rate to 0. NetSuite might create taxes rates automatically which
-      # will cause the sales order total to differ from the order in the Spree store
-      item_list = order_payload[:line_items].map do |item|
+    def build_item_list
+      sales_order_items = order_payload[:line_items].map do |item|
 
         unless inventory_item = inventory_item_service.find_by_item_id(item[:sku])
           raise NetSuite::RecordNotFound, "Inventory Item \"#{item[:sku]}\" not found in NetSuite"
@@ -81,6 +92,8 @@ module NetsuiteIntegration
           item: { internal_id: inventory_item.internal_id },
           quantity: item[:quantity],
           amount: item[:quantity] * item[:price],
+          # Force tax rate to 0. NetSuite might create taxes rates automatically which
+          # will cause the sales order total to differ from the order in the Spree store
           tax_rate1: 0
         })
       end
@@ -90,19 +103,19 @@ module NetsuiteIntegration
         value = order_payload[:totals][type] || 0
 
         if value > 0
-          item_list.push(NetSuite::Records::SalesOrderItem.new({
+          sales_order_items.push(NetSuite::Records::SalesOrderItem.new({
             item: { internal_id: internal_id_for(type) },
             rate: value
           }))
         end
       end
 
-      sales_order.item_list = NetSuite::Records::SalesOrderItemList.new(item: item_list)
+      NetSuite::Records::SalesOrderItemList.new(item: sales_order_items)
     end
 
-    def import_billing!
+    def build_bill_address
       if payload = @payload[:order][:billing_address]
-        sales_order.transaction_bill_address = NetSuite::Records::BillAddress.new({
+        NetSuite::Records::BillAddress.new({
           bill_addressee: "#{payload[:firstname]} #{payload[:lastname]}",
           bill_addr1: payload[:address1],
           bill_addr2: payload[:address2],
@@ -115,12 +128,9 @@ module NetsuiteIntegration
       end
     end
 
-    def import_shipping!
-      sales_order.shipping_cost = order_payload[:totals][:shipping]
-      sales_order.ship_method = NetSuite::Records::RecordRef.new(internal_id: shipping_id)
-
+    def build_ship_address
       payload = @payload[:order][:shipping_address]
-      sales_order.transaction_ship_address = NetSuite::Records::ShipAddress.new({
+      NetSuite::Records::ShipAddress.new({
         ship_addressee: "#{payload[:firstname]} #{payload[:lastname]}",
         ship_addr1: payload[:address1],
         ship_addr2: payload[:address2],

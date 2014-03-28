@@ -79,7 +79,7 @@ describe NetsuiteEndpoint do
     context 'when order is new' do
       let(:request) do
         payload = Factories.order_new_payload
-        payload['order']['number'] = "R43534GGW435G435FRE"
+        payload['order']['number'] = "RXXXXXC23774"
 
         {
           message: 'order:new',
@@ -107,12 +107,15 @@ describe NetsuiteEndpoint do
         }
       end
 
-      it 'creates customer deposit if order just got paid' do
+      it 'creates customer deposit' do
+        request[:payload][:order][:number] = "RXXXXXC23774"
+
         VCR.use_cassette('order/customer_deposit_on_updated_message') do
           post '/orders', request.to_json, auth
         end
 
-        expect(json_response['notifications'][0]['subject']).to match('Customer Deposit created for NetSuite Sales Order')
+        notifications = json_response['notifications']
+        expect(notifications.last['subject']).to match('Customer Deposit set up for')
       end
 
       context "order has invalid items" do
@@ -151,17 +154,30 @@ describe NetsuiteEndpoint do
           {
             message: 'order:updated',
             message_id: 123,
-            payload: Factories.order_new_payload.merge(parameters: parameters)
+            payload: Factories.order_updated_items_payload.merge(parameters: parameters)
           }
         end
 
-        it "just returns 200" do
-          VCR.use_cassette('order/already_imported') do
+        it "updates sales order" do
+          VCR.use_cassette('order/update_items') do
             post '/orders', request.to_json, auth
           end
 
           expect(last_response.status).to eq 200
-          expect(last_response.headers["Content-Type"]).to match "application/json"
+          notifications = json_response['notifications']
+
+          # Ensure customer deposit notification are not present
+          expect(notifications.count).to eq 1
+          expect(notifications.first['description']).to match("updated on NetSuite")
+        end
+
+        it "ignore 0 amount payments to avoid netsuite error" do
+          request[:payload] = Factories.payments_amount_0_payload.merge(parameters: parameters)
+
+          VCR.use_cassette('order/payments_amount_0') do
+            post '/orders', request.to_json, auth
+            expect(last_response.status).to eq 200
+          end
         end
       end
     end
@@ -199,7 +215,10 @@ describe NetsuiteEndpoint do
       end
 
       context 'when CustomerDeposit record DOES NOT exist' do
-        before { request[:payload][:order][:number] = "R780015316" }
+        before do
+          request[:payload][:order][:number] = "R780015316"
+          request[:payload][:order][:payments] = []
+        end
 
         it 'closes the order' do
           VCR.use_cassette("order/close") do
@@ -228,10 +247,12 @@ describe NetsuiteEndpoint do
         end
 
         def setup_stubs
-          NetsuiteIntegration::Refund.any_instance.stub_chain(:customer_deposit_service, :find_by_external_id).and_return(customer_deposit)
-          NetsuiteIntegration::Refund.any_instance.stub_chain(:customer_service, :find_by_external_id).and_return(customer)
-          NetsuiteIntegration::Refund.any_instance.stub_chain(:sales_order_service, :close!).and_return(true)
+          NetsuiteIntegration::Refund.any_instance.stub_chain(:customer_deposit_service, find_by_sales_order: [customer_deposit])
+          NetsuiteIntegration::Refund.any_instance.stub_chain(:customer_service, find_by_external_id: customer)
+          NetsuiteIntegration::Refund.any_instance.stub_chain(:sales_order_service, close!: true)
         end
+
+        it "really issues a customer refund and closes order by reaching NetSuite api"
       end
     end
   end

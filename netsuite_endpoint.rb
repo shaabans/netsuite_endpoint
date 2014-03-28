@@ -93,26 +93,40 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
   def create_or_update_order
     order = NetsuiteIntegration::Order.new(@config, @message)
 
-    unless order.imported?
-      if order.import
-        add_notification "info", "Order #{order.sales_order.external_id} sent to NetSuite # #{order.sales_order.tran_id}"
-        process_result 200
+    if order.imported?
+      if order.update
+        add_notification "info", "Order #{order.existing_sales_order.external_id} updated on NetSuite # #{order.existing_sales_order.tran_id}"
       else
         add_notification "error", "Failed to import order #{order.sales_order.external_id} into Netsuite", order.errors
-        process_result 500
       end
     else
-      if order.got_paid?
-        if order.create_customer_deposit
-          add_notification "info", "Customer Deposit created for NetSuite Sales Order #{order.sales_order.external_id}"
-          process_result 200
-        else
-          add_notification "error", "Failed to create a Customer Deposit for NetSuite Sales Order #{order.sales_order.external_id}"
-          process_result 500
-        end
+      if order.create
+        add_notification "info", "Order #{order.sales_order.external_id} sent to NetSuite # #{order.sales_order.tran_id}"
       else
-        process_result 200
+        add_notification "error", "Failed to import order #{order.sales_order.external_id} into Netsuite", order.errors
       end
+    end
+
+    if order.paid?
+      customer_deposit = NetsuiteIntegration::Services::CustomerDeposit.new(@config, @message[:payload])
+      records = customer_deposit.create_records order.sales_order
+
+      errors = records.map(&:errors).compact.flatten
+      errors = errors.map(&:message).flatten
+
+      if errors.any?
+        add_notification "error", "Failed to set up Customer Deposit for #{order.existing_sales_order.external_id} in NetSuite", errors.join(", ")
+      end
+
+      if customer_deposit.persisted
+        add_notification "info", "Customer Deposit set up for Sales Order #{(order.existing_sales_order || order.sales_order).tran_id}", errors.join(", ")
+      end
+    end
+
+    if @notifications.any? { |n| n[:level] == "error" }
+      process_result 500
+    else
+      process_result 200
     end
   end
 
@@ -121,11 +135,6 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
       raise RecordNotFoundSalesOrder, "NetSuite Sales Order not found for order #{order_payload[:number]}"
 
     if customer_record_exists?
-      sales_order_service.close!(order)
-      add_notification "info", "NetSuite Sales Order #{@message[:payload][:order][:number]} was closed"
-
-      process_result 200
-    else
       refund = NetsuiteIntegration::Refund.new(@config, @message, order)
       if refund.process!
         add_notification "info", "Customer Refund created and NetSuite Sales Order #{@message[:payload][:order][:number]} was closed"
@@ -134,11 +143,16 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
         add_notification "error", "Failed to create a Customer Refund and close the NetSuite Sales Order #{@message[:payload][:order][:number]}"
         process_result 500
       end      
+    else
+      sales_order_service.close!(order)
+      add_notification "info", "NetSuite Sales Order #{@message[:payload][:order][:number]} was closed"
+
+      process_result 200
     end
   end
 
   def customer_record_exists?
-    @message[:payload][:original][:payment_state] == 'balance_due'
+    @message[:payload][:order][:payments] && @message[:payload][:order][:payments].any?
   end
 
   def sales_order_service
