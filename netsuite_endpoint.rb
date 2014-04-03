@@ -129,10 +129,8 @@ class NetsuiteEndpoint < EndpointBase::Sinatra::Base
       unless refund.service.find_by_external_id(refund.deposits)
         if refund.create
           add_notification "info", "Customer Refund created for #{@message[:payload][:order][:number]}"
-          process_result 200
         else
           add_notification "error", "Failed to create a Customer Refund for order #{@message[:payload][:order][:number]}"
-          process_result 500
         end
       end
     end
